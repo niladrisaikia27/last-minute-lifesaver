@@ -5,10 +5,18 @@ from dotenv import load_dotenv
 from datetime import date
 import task_manager
 
-load_dotenv()
+# Try Streamlit secrets first (production), fall back to .env (local)
+try:
+    import streamlit as st
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+    MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3-flash-preview")
+except Exception:
+    from dotenv import load_dotenv
+    load_dotenv()
+    API_KEY = os.environ["GEMINI_API_KEY"]
+    MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
 
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+client = genai.Client(api_key=API_KEY)
 
 # --- Tool functions Gemini can call ---
 
@@ -76,20 +84,61 @@ def get_procrastination_profile() -> str:
     profile = task_manager.get_procrastination_profile()
     return json.dumps(profile, indent=2)
 
+def run_premortem_analysis() -> str:
+    """Perform a pre-mortem analysis — reason through what could go wrong
+    with each pending task BEFORE it happens. Rank tasks by failure risk,
+    identify the most dangerous dependency chain, and suggest preventive actions."""
+    tasks = task_manager.get_all_tasks()
+    pending = [t for t in tasks if not t["done"]]
+    if not pending:
+        return "No pending tasks to analyze."
+    urgency = task_manager.get_urgency_analysis()
+    return json.dumps({
+        "pending_tasks": pending,
+        "urgency_breakdown": urgency
+    }, indent=2)
+
+def suggest_triage() -> str:
+    """When user is overwhelmed, analyze all tasks and create a ruthless
+    triage plan with three categories:
+    - DO NOW: critical tasks that cannot be skipped
+    - DEFER: tasks that can be pushed without major consequences
+    - DROP: tasks to eliminate entirely to free up capacity"""
+    tasks = task_manager.get_all_tasks()
+    urgency = task_manager.get_urgency_analysis()
+    return json.dumps({
+        "all_tasks": tasks,
+        "urgency": urgency
+    }, indent=2)
+
 # --- Agent runner ---
 
-SYSTEM_PROMPT = f"""You are a proactive productivity assistant called Life Saver.
-Today is {date.today().isoformat()}.
+SYSTEM_PROMPT = f"""You are Life Saver, an advanced AI productivity companion.
+Today is {date.today().isoformat()}. Deadline awareness is critical.
 
-When user mentions a task → use add_task immediately.
-When asked what's pending → use analyze_urgency.
-When a task might slip → use get_cascade_impact to warn them.
-When tasks are related → use link_task_dependency.
-When asked about patterns or habits → use get_procrastination_profile.
-When a task is done → use mark_task_done.
+## Your Mission
+You don't just store tasks. You actively reason about time, dependencies,
+and human psychology to help users finish things before deadlines.
 
-Be proactive: if someone adds a task due very soon, warn them about
-cascade effects. If they seem overwhelmed, suggest what to drop."""
+## Decision Rules — follow every turn:
+1. Message contains a task/deadline → call add_task FIRST, then analyze_urgency
+2. After adding any task due within 3 days → also call get_cascade_impact on it
+3. User seems overwhelmed → call analyze_urgency, then recommend what to drop or defer
+4. User mentions two related tasks → call link_task_dependency to connect them
+5. Task marked done → call mark_task_done, then tell them what's now unblocked
+6. Asked about habits/patterns → call get_procrastination_profile
+
+## Response Style
+- Lead with the action: "Added: [task] due [date] — [priority]"
+- Follow with ONE proactive insight: urgency warning, cascade risk, or encouragement  
+- End with a specific next step
+- Stay under 80 words unless the user asks for detailed analysis
+- Never say "I don't have access to your tasks" — use get_all_tasks
+
+## What makes you different from a reminder app:
+You understand that missing one task can break a chain of others.
+You recognize when someone is overloaded and help them triage.
+You remember the full conversation — use that context."""
 
 def run_agent(user_message: str, history: list = None) -> str:
     if history is None:
@@ -113,7 +162,8 @@ def run_agent(user_message: str, history: list = None) -> str:
             system_instruction=SYSTEM_PROMPT,
             tools=[add_task, get_all_tasks, mark_task_done,
                    analyze_urgency, get_cascade_impact,
-                   link_task_dependency, get_procrastination_profile],
+                   link_task_dependency, get_procrastination_profile,
+                   run_premortem_analysis, suggest_triage],
         )
     )
     return response.text
