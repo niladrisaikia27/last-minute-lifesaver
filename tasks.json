@@ -5,7 +5,8 @@
     "deadline": "2026-06-29",
     "priority": "high",
     "done": true,
-    "created_at": "2026-06-26T19:22:31.370062"
+    "created_at": "2026-06-26T19:22:31.370062",
+    "completed_at": "2026-06-27T14:10:54.811674"
   },
   {
     "id": 2,
@@ -14,5 +15,62 @@
     "priority": "low",
     "done": false,
     "created_at": "2026-06-26T19:28:28.766566"
+  },
+  {
+    "id": 3,
+    "title": "Amazon ML Summer School 2026 Selection Test",
+    "deadline": "2026-06-28",
+    "priority": "high",
+    "category": "general",
+    "done": false,
+    "created_at": "2026-06-26T22:51:02.637392",
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": 4,
+    "title": "write the final project report",
+    "deadline": "2026-06-30",
+    "priority": "medium",
+    "category": "general",
+    "done": false,
+    "created_at": "2026-06-26T22:57:04.883504",
+    "completed_at": null,
+    "dependencies": [
+      3
+    ]
+  },
+  {
+    "id": 5,
+    "title": "buy groceries",
+    "deadline": "2026-06-27",
+    "priority": "low",
+    "category": "general",
+    "done": false,
+    "created_at": "2026-06-26T22:57:04.912675",
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": 6,
+    "title": "write the final project report",
+    "deadline": "2026-06-30",
+    "priority": "medium",
+    "category": "general",
+    "done": false,
+    "created_at": "2026-06-26T23:00:58.423430",
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": 7,
+    "title": "buy groceries",
+    "deadline": "2026-06-27",
+    "priority": "low",
+    "category": "general",
+    "done": false,
+    "created_at": "2026-06-26T23:00:58.448187",
+    "completed_at": null,
+    "dependencies": []
   }
 ]
