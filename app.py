@@ -13,9 +13,10 @@ st.set_page_config(
 st.markdown("""
 <style>
 section[data-testid="stSidebar"] { background: #0E0E10 !important; }
-section[data-testid="stSidebar"] * { font-family: 'Inter', sans-serif; }
 .main { background: #111114; }
 div[data-testid="stChatMessage"] { background: transparent !important; }
+[data-testid="collapsedControl"] { display: none !important; }
+button[kind="header"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -147,14 +148,29 @@ with st.sidebar:
         for t in analysis["due_this_week"]:
             st.markdown(task_card(t), unsafe_allow_html=True)
 
+    # ── Upcoming toggle ───────────────────────────────────────
     if analysis["upcoming"]:
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-        with st.expander(f"🔮 Upcoming ({len(analysis['upcoming'])})"):
+        if "show_upcoming" not in st.session_state:
+            st.session_state.show_upcoming = False
+        if st.button(
+            f"Upcoming ({len(analysis['upcoming'])})",
+            use_container_width=True, key="btn_upcoming"
+        ):
+            st.session_state.show_upcoming = not st.session_state.show_upcoming
+        if st.session_state.show_upcoming:
             for t in analysis["upcoming"]:
                 st.markdown(task_card(t), unsafe_allow_html=True)
 
+    # ── Completed toggle ──────────────────────────────────────
     if analysis["completed"]:
-        with st.expander(f"Completed  ·  {done_n} done"):
+        if "show_completed" not in st.session_state:
+            st.session_state.show_completed = False
+        if st.button(
+            f"Completed — {done_n} done",
+            use_container_width=True, key="btn_completed"
+        ):
+            st.session_state.show_completed = not st.session_state.show_completed
+        if st.session_state.show_completed:
             for t in analysis["completed"]:
                 st.markdown(
                     f'<div style="display:flex;align-items:center;gap:10px;'
@@ -171,7 +187,8 @@ with st.sidebar:
 
     st.divider()
 
-    if st.button("🧠 Procrastination Profile", use_container_width=True):
+    if st.button("Procrastination Profile",
+                 use_container_width=True, key="btn_profile"):
         profile = task_manager.get_procrastination_profile()
         if "message" in profile:
             st.info(profile["message"])
@@ -179,11 +196,73 @@ with st.sidebar:
             avg     = profile.get("average_delay_days", 0)
             pattern = profile.get("pattern", "unknown")
             if pattern == "early":
-                st.success(f"✨ You finish {abs(avg)} days early on average!")
+                st.success(f"You finish {abs(avg)} days early on average!")
             elif pattern == "late":
-                st.warning(f"⚠️ You submit {avg} days late on average.")
+                st.warning(f"You submit {avg} days late on average.")
             else:
-                st.success("🎯 Right on time on average!")
+                st.success("Right on time on average!")
+
+    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+    # ── Edit/Delete toggle ────────────────────────────────────
+    if "show_edit" not in st.session_state:
+        st.session_state.show_edit = False
+    if st.button(
+        "Edit or Delete a Task",
+        use_container_width=True, key="btn_edit_toggle"
+    ):
+        st.session_state.show_edit = not st.session_state.show_edit
+
+    if st.session_state.show_edit:
+        all_t = task_manager.get_all_tasks()
+        if not all_t:
+            st.caption("No tasks yet.")
+        else:
+            task_options = {
+                f"#{t['id']} — {t['title'][:28]}": t for t in all_t
+            }
+            selected_label = st.selectbox(
+                "Select task", list(task_options.keys()),
+                key="edit_select", label_visibility="collapsed"
+            )
+            selected = task_options[selected_label]
+            new_title = st.text_input(
+                "Title", value=selected["title"], key="edit_title"
+            )
+            col_dl, col_pri = st.columns(2)
+            with col_dl:
+                new_deadline = st.text_input(
+                    "Deadline", value=selected["deadline"], key="edit_deadline"
+                )
+            with col_pri:
+                pri_opts = ["high", "medium", "low"]
+                new_priority = st.selectbox(
+                    "Priority", pri_opts,
+                    index=pri_opts.index(selected.get("priority", "medium")),
+                    key="edit_priority"
+                )
+            new_category = st.text_input(
+                "Category", value=selected.get("category", "general"),
+                key="edit_category"
+            )
+            c_save, c_del = st.columns(2)
+            with c_save:
+                if st.button("Save", use_container_width=True, key="btn_save"):
+                    task_manager.update_task(
+                        selected["id"],
+                        title=new_title,
+                        deadline=new_deadline,
+                        priority=new_priority,
+                        category=new_category
+                    )
+                    st.success("Saved!")
+                    st.rerun()
+            with c_del:
+                if st.button("Delete", use_container_width=True, key="btn_del"):
+                    task_manager.delete_task(selected["id"])
+                    st.warning("Deleted.")
+                    st.rerun()
+    # ── End Manage Tasks ─────────────────────────────────────
 
     st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
@@ -230,6 +309,8 @@ def get_morning_briefing():
         return
     analysis     = task_manager.get_urgency_analysis()
     urgent_count = len(analysis["overdue"]) + len(analysis["due_today"])
+    if urgent_count == 0:      
+        return
     if urgent_count == 0 and not analysis["due_this_week"]:
         return
     briefing_prompt = (
@@ -251,65 +332,145 @@ st.markdown("""
   <span style="font-size:36px;">⚡</span>
   <span style="font-size:28px;font-weight:700;color:#F0F0F0;">Last-Minute Life Saver</span>
 </div>
-<p style="color:#666;margin:0 0 24px;font-size:14px;">
+<p style="color:#666;margin:0 0 20px;font-size:14px;">
   Describe your tasks in plain English — I'll parse, prioritize,
   and warn you about cascade effects.
 </p>
 """, unsafe_allow_html=True)
 
-# ── Trigger handler — runs in main area, renders in chat ──────
-trigger = st.session_state.pop("trigger", None)
-if trigger == "premortem":
-    auto_prompt = (
-        "Run a pre-mortem analysis on all my pending tasks. "
-        "What is most likely to go wrong with each one? "
-        "Rank them by failure risk and give me one preventive action per task."
+# ── Tabs ──────────────────────────────────────────────────────
+tab_chat, tab_image = st.tabs(["Chat", "Image to Tasks"])
+
+
+# ════════════════════════════════════════════════════════════
+# TAB 1 — Chat
+# ════════════════════════════════════════════════════════════
+with tab_chat:
+
+    # Trigger handler
+    trigger = st.session_state.pop("trigger", None)
+    if trigger == "premortem":
+        auto_prompt = (
+            "Run a pre-mortem analysis on all my pending tasks. "
+            "What is most likely to go wrong with each one? "
+            "Rank them by failure risk and give me one preventive action per task."
+        )
+    elif trigger == "triage":
+        auto_prompt = (
+            "I'm completely overwhelmed. Use suggest_triage to analyse everything "
+            "and give me a ruthless plan: exactly what to DO NOW, what to DEFER, "
+            "and what to DROP entirely. Be specific — name the tasks."
+        )
+    else:
+        auto_prompt = None
+
+    if auto_prompt:
+        with st.chat_message("user"):
+            st.write(auto_prompt)
+        st.session_state.messages.append({"role": "user", "content": auto_prompt})
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                reply = gemini_agent.run_agent(auto_prompt, st.session_state.history)
+            st.write(reply)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+        st.session_state.history.append({"role": "user",      "content": auto_prompt})
+        st.session_state.history.append({"role": "assistant", "content": reply})
+        st.rerun()
+
+    # Chat history
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    # Morning briefing
+    get_morning_briefing()
+
+    # Chat input
+    prompt = st.chat_input(
+        "e.g. 'Submit ML report by June 30 — depends on finishing research'"
     )
-elif trigger == "triage":
-    auto_prompt = (
-        "I'm completely overwhelmed. Use suggest_triage to analyse everything "
-        "and give me a ruthless plan: exactly what to DO NOW, what to DEFER, "
-        "and what to DROP entirely. Be specific — name the tasks."
+    if prompt:
+        with st.chat_message("user"):
+            st.write(prompt)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                reply = gemini_agent.run_agent(prompt, st.session_state.history)
+            st.write(reply)
+
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+        st.session_state.history.append({"role": "user",      "content": prompt})
+        st.session_state.history.append({"role": "assistant", "content": reply})
+        st.rerun()
+
+
+# ════════════════════════════════════════════════════════════
+# TAB 2 — Image to Tasks
+# ════════════════════════════════════════════════════════════
+with tab_image:
+    st.markdown("""
+<div style="margin-bottom:16px;">
+  <p style="font-size:16px;font-weight:600;color:#F0F0F0;margin:0 0 6px;">
+    Scan any image for tasks
+  </p>
+  <p style="font-size:13px;color:#666;margin:0;">
+    Upload a photo of a handwritten to-do list, whiteboard, sticky notes,
+    or any screenshot — Gemini will read it and add all tasks automatically.
+  </p>
+</div>
+""", unsafe_allow_html=True)
+
+    uploaded = st.file_uploader(
+        "Upload image",
+        type=["jpg", "jpeg", "png", "webp"],
+        label_visibility="collapsed"
     )
-else:
-    auto_prompt = None
 
-if auto_prompt:
-    with st.chat_message("user"):
-        st.write(auto_prompt)
-    st.session_state.messages.append({"role": "user", "content": auto_prompt})
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            reply = gemini_agent.run_agent(auto_prompt, st.session_state.history)
-        st.write(reply)
-    st.session_state.messages.append({"role": "assistant", "content": reply})
-    st.session_state.history.append({"role": "user",      "content": auto_prompt})
-    st.session_state.history.append({"role": "assistant", "content": reply})
-    st.rerun()
+    if uploaded is not None:
+        col_img, col_result = st.columns([1, 1], gap="large")
 
-# ── Chat history ──────────────────────────────────────────────
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
+        with col_img:
+            st.image(uploaded, caption="Uploaded image", use_container_width=True)
 
-# ── Morning briefing (after history so it appears at bottom) ──
-get_morning_briefing()
+        with col_result:
+            # Only process once per upload using file name + size as key
+            img_key = f"{uploaded.name}_{uploaded.size}"
+            if st.session_state.get("last_img_key") != img_key:
+                with st.spinner("Gemini is reading your image..."):
+                    image_bytes = uploaded.read()
+                    mime_type   = uploaded.type or "image/jpeg"
+                    result = gemini_agent.extract_tasks_from_image(
+                        image_bytes, mime_type
+                    )
+                st.session_state.last_img_key    = img_key
+                st.session_state.last_img_result = result
+                st.rerun()
+            else:
+                result = st.session_state.get("last_img_result", "")
 
-# ── Chat input ────────────────────────────────────────────────
-prompt = st.chat_input(
-    "e.g. 'Submit ML report by June 30 — depends on finishing research'"
-)
-if prompt:
-    with st.chat_message("user"):
-        st.write(prompt)
-    st.session_state.messages.append({"role": "user", "content": prompt})
+            st.markdown(
+                f'<div style="background:rgba(255,255,255,0.04);border-left:3px solid #4B9EFF;'
+                f'border-radius:6px;padding:14px 16px;">'
+                f'<p style="font-size:12px;color:#4B9EFF;font-weight:600;'
+                f'text-transform:uppercase;letter-spacing:.06em;margin:0 0 8px;">Gemini extracted</p>'
+                f'<p style="font-size:13px;color:#E0E0E0;line-height:1.7;margin:0;">{result}</p>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            reply = gemini_agent.run_agent(prompt, st.session_state.history)
-        st.write(reply)
-
-    st.session_state.messages.append({"role": "assistant", "content": reply})
-    st.session_state.history.append({"role": "user",      "content": prompt})
-    st.session_state.history.append({"role": "assistant", "content": reply})
-    st.rerun()
+            if st.button("View tasks in dashboard", use_container_width=True):
+                st.session_state.last_img_key = None
+                st.rerun()
+    else:
+        # Empty state
+        st.markdown("""
+<div style="border:1px dashed #333;border-radius:10px;padding:40px 20px;
+            text-align:center;margin-top:20px;">
+  <p style="font-size:32px;margin:0 0 10px;">📸</p>
+  <p style="font-size:14px;color:#555;margin:0 0 6px;">Drop an image here</p>
+  <p style="font-size:12px;color:#333;margin:0;">
+    Handwritten lists · Whiteboards · Screenshots · Sticky notes
+  </p>
+</div>
+""", unsafe_allow_html=True)

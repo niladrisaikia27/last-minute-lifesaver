@@ -201,3 +201,70 @@ def generate_ics() -> str:
             pass
     lines.append("END:VCALENDAR")
     return "\r\n".join(lines)
+
+def update_task(task_id: int, title: str = None, deadline: str = None,
+                priority: str = None, category: str = None) -> dict:
+    conn = get_conn()
+    task = conn.execute(
+        "SELECT * FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    if not task:
+        conn.close()
+        return {}
+    conn.execute(
+        "UPDATE tasks SET title=?, deadline=?, priority=?, category=? WHERE id=?",
+        (title    or task["title"],
+         deadline or task["deadline"],
+         priority or task["priority"],
+         category or task["category"],
+         task_id)
+    )
+    conn.commit()
+    updated = conn.execute(
+        "SELECT * FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    result = _row(updated, conn)
+    conn.close()
+    return result
+
+def delete_task(task_id: int) -> bool:
+    conn = get_conn()
+    n = conn.execute(
+        "DELETE FROM tasks WHERE id=?", (task_id,)
+    ).rowcount
+    conn.execute(
+        "DELETE FROM dependencies WHERE task_id=? OR depends_on=?",
+        (task_id, task_id)
+    )
+    conn.commit()
+    conn.close()
+    return n > 0
+
+def generate_ics() -> str:
+    tasks = get_all_tasks()
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Last-Minute Life Saver//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+    ]
+    for task in tasks:
+        if task.get("done"):
+            continue
+        try:
+            deadline = task["deadline"].replace("-", "")
+            lines += [
+                "BEGIN:VEVENT",
+                f"UID:task-{task['id']}@lastminute",
+                f"SUMMARY:[{task['priority'].upper()}] {task['title']}",
+                f"DTSTART;VALUE=DATE:{deadline}",
+                f"DTEND;VALUE=DATE:{deadline}",
+                f"DESCRIPTION:Category: {task.get('category','general')} | Priority: {task['priority']}",
+                "STATUS:NEEDS-ACTION",
+                "END:VEVENT",
+            ]
+        except Exception:
+            pass
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines)

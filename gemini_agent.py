@@ -111,40 +111,116 @@ def suggest_triage() -> str:
         "urgency": urgency
     }, indent=2)
 
+def search_web_for_context(query: str) -> str:
+    """Search the web for relevant information — exam dates, competition
+    deadlines, official announcements, or study resources.
+
+    Args:
+        query: What to search for, e.g. 'Amazon ML Summer School 2026 dates'
+    """
+    # Separate call with Google Search enabled — clean agentic delegation
+    try:
+        search_response = client.models.generate_content(
+            model=MODEL,
+            contents=f"Search and summarize: {query}. Be concise and factual.",
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())]
+            )
+        )
+        return search_response.text
+    except Exception as e:
+        return f"Search unavailable: {str(e)}"
+
+def edit_task(task_id: int, title: str = None, deadline: str = None,
+              priority: str = None, category: str = None) -> str:
+    """Edit an existing task — update its title, deadline, priority, or category.
+
+    Args:
+        task_id: The numeric ID of the task to edit
+        title: New title (optional — leave None to keep current)
+        deadline: New deadline in YYYY-MM-DD format (optional)
+        priority: New priority — high, medium, or low (optional)
+        category: New category (optional)
+    """
+    result = task_manager.update_task(task_id, title, deadline, priority, category)
+    if not result:
+        return f"Task {task_id} not found."
+    return f"Updated task #{task_id}: '{result['title']}' due {result['deadline']} [{result['priority']}]"
+
+def delete_task(task_id: int) -> str:
+    """Permanently delete a task.
+
+    Args:
+        task_id: The numeric ID of the task to delete
+    """
+    success = task_manager.delete_task(task_id)
+    return f"Task #{task_id} deleted." if success else f"Task #{task_id} not found."
+
+def extract_tasks_from_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
+    """Send an image to Gemini and extract all tasks from it using multimodal AI."""
+    try:
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                types.Part.from_text(text=f"""Today is {date.today().isoformat()}.
+Look at this image carefully. It may be a handwritten to-do list, whiteboard,
+screenshot, or any image containing tasks.
+
+Extract EVERY task, deadline, and priority you can see.
+For each task found:
+- Call add_task with the task title
+- Estimate deadline in YYYY-MM-DD format (if not shown, use today + 7 days)
+- Set priority based on context clues (urgent words = high, etc.)
+- Set category: academic, work, personal, or project
+
+After adding all tasks, write a 2-line summary of what you extracted.""")
+            ],
+            config=types.GenerateContentConfig(
+                tools=[add_task],
+            )
+        )
+        return response.text
+    except Exception as e:
+        err = str(e)
+        if "429" in err or "RESOURCE_EXHAUSTED" in err:
+            return "Rate limit hit. Wait 60 seconds and try again."
+        return f"Could not process image: {err[:200]}"
+
 # --- Agent runner ---
 
 SYSTEM_PROMPT = f"""You are Life Saver, an advanced AI productivity companion.
-Today is {date.today().isoformat()}. Deadline awareness is critical.
+Today is {date.today().isoformat()}.
 
-## Your Mission
-You don't just store tasks. You actively reason about time, dependencies,
-and human psychology to help users finish things before deadlines.
+## Core Rules — apply every single turn:
+1. User mentions a task/deadline → call add_task FIRST, then analyze_urgency
+2. Task added due within 3 days → also call get_cascade_impact immediately
+3. User asks about an exam, competition, or deadline you're unsure about → call search_web_for_context first
+4. User seems overwhelmed → call suggest_triage
+5. Two tasks are related → call link_task_dependency
+6. Task is done → call mark_task_done, then announce what's now unblocked
+7. User wants to change a task → call edit_task
+8. User wants to remove a task → call delete_task
+9. Asked about patterns → call get_procrastination_profile
+10. Asked to plan today → use analyze_urgency then build a schedule
 
-## Decision Rules — follow every turn:
-1. Message contains a task/deadline → call add_task FIRST, then analyze_urgency
-2. After adding any task due within 3 days → also call get_cascade_impact on it
-3. User seems overwhelmed → call analyze_urgency, then recommend what to drop or defer
-4. User mentions two related tasks → call link_task_dependency to connect them
-5. Task marked done → call mark_task_done, then tell them what's now unblocked
-6. Asked about habits/patterns → call get_procrastination_profile
+## What makes you different:
+You search the web when you need real information.
+You understand cascade effects — one delay breaks a chain.
+You profile procrastination patterns to give personalized advice.
+You help users decide what to drop, not just what to do.
 
-## Response Style
-- Lead with the action: "Added: [task] due [date] — [priority]"
-- Follow with ONE proactive insight: urgency warning, cascade risk, or encouragement  
+## Response style:
+- Lead with the action taken
+- One proactive insight per response
 - End with a specific next step
-- Stay under 80 words unless the user asks for detailed analysis
-- Never say "I don't have access to your tasks" — use get_all_tasks
-
-## What makes you different from a reminder app:
-You understand that missing one task can break a chain of others.
-You recognize when someone is overloaded and help them triage.
-You remember the full conversation — use that context."""
+- Max 80 words unless analysis is requested
+- Never say you lack access — use your tools"""
 
 def run_agent(user_message: str, history: list = None) -> str:
     if history is None:
         history = []
 
-    # Build full conversation for Gemini
     contents = []
     for msg in history:
         role = "user" if msg["role"] == "user" else "model"
@@ -155,15 +231,37 @@ def run_agent(user_message: str, history: list = None) -> str:
         types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
     )
 
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            tools=[add_task, get_all_tasks, mark_task_done,
-                   analyze_urgency, get_cascade_impact,
-                   link_task_dependency, get_procrastination_profile,
-                   run_premortem_analysis, suggest_triage],
+    try:
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                tools=[
+                    add_task, get_all_tasks, mark_task_done,
+                    analyze_urgency, get_cascade_impact,
+                    link_task_dependency, get_procrastination_profile,
+                    run_premortem_analysis, suggest_triage,
+                    search_web_for_context, edit_task, delete_task,
+                ],
+            )
         )
-    )
-    return response.text
+        return response.text
+
+    except Exception as e:
+        err = str(e)
+        if "429" in err or "RESOURCE_EXHAUSTED" in err:
+            # Extract retry seconds if available
+            import re
+            match = re.search(r'retry in (\d+)', err)
+            wait = match.group(1) if match else "60"
+            return (
+                f"I'm thinking too fast — the API rate limit was hit. "
+                f"Please wait {wait} seconds and try again. "
+                f"This happens on the free tier (5 requests/minute). "
+                f"Your tasks are safe and nothing was lost."
+            )
+        elif "404" in err or "not found" in err.lower():
+            return "Model not found. Check your GEMINI_MODEL in .env file."
+        else:
+            return f"Something went wrong: {err[:200]}"
