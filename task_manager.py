@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import datetime, date
-
-DB_FILE = "tasks.db"
+import os
+DB_FILE = os.environ.get("LASTMINUTE_DB", "tasks.db")
 
 def get_conn():
     conn = sqlite3.connect(DB_FILE)
@@ -172,6 +172,64 @@ def get_procrastination_profile() -> dict:
         "breakdown": delays
     }
 
+def filter_tasks(tasks: list, search_term: str = "", priority: str = "All",
+                  category: str = "All", status: str = "All") -> list:
+    """Filter an already-fetched list of tasks by free-text title search,
+    priority, category, and done/pending status. Pure filter — doesn't
+    touch the database, so it's cheap to call on every rerun."""
+    term = search_term.strip().lower()
+    result = []
+    for t in tasks:
+        if term and term not in t["title"].lower():
+            continue
+        if priority != "All" and t.get("priority") != priority:
+            continue
+        if category != "All" and t.get("category", "general") != category:
+            continue
+        if status == "Pending" and t["done"]:
+            continue
+        if status == "Done" and not t["done"]:
+            continue
+        result.append(t)
+    return result
+
+
+def get_all_categories() -> list:
+    """Distinct categories currently in use — feeds the category filter
+    dropdown. Categories are free text (the Edit panel lets users type
+    anything), so this can't be a fixed list."""
+    tasks = get_all_tasks()
+    return sorted({t.get("category", "general") for t in tasks})
+
+def get_category_completion_stats() -> list:
+    """Done vs pending task counts per category — feeds the
+    completion-rate chart."""
+    tasks = get_all_tasks()
+    by_cat = {}
+    for t in tasks:
+        cat = t.get("category", "general")
+        by_cat.setdefault(cat, {"category": cat, "done": 0, "pending": 0})
+        if t["done"]:
+            by_cat[cat]["done"] += 1
+        else:
+            by_cat[cat]["pending"] += 1
+    return list(by_cat.values())
+
+
+def get_delay_by_category() -> list:
+    """Average delay in days per category, from completed tasks only.
+    Positive = finished late, negative = finished early."""
+    profile = get_procrastination_profile()
+    breakdown = profile.get("breakdown", [])
+    by_cat = {}
+    for d in breakdown:
+        cat = d.get("category", "general")
+        by_cat.setdefault(cat, []).append(d["delay_days"])
+    return [
+        {"category": cat, "avg_delay_days": round(sum(vals) / len(vals), 1), "count": len(vals)}
+        for cat, vals in by_cat.items()
+    ]
+
 def generate_ics() -> str:
     """Generate ICS calendar file from all pending tasks."""
     tasks = get_all_tasks()
@@ -201,3 +259,41 @@ def generate_ics() -> str:
             pass
     lines.append("END:VCALENDAR")
     return "\r\n".join(lines)
+
+def update_task(task_id: int, title: str = None, deadline: str = None,
+                priority: str = None, category: str = None) -> dict:
+    conn = get_conn()
+    task = conn.execute(
+        "SELECT * FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    if not task:
+        conn.close()
+        return {}
+    conn.execute(
+        "UPDATE tasks SET title=?, deadline=?, priority=?, category=? WHERE id=?",
+        (title    or task["title"],
+         deadline or task["deadline"],
+         priority or task["priority"],
+         category or task["category"],
+         task_id)
+    )
+    conn.commit()
+    updated = conn.execute(
+        "SELECT * FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    result = _row(updated, conn)
+    conn.close()
+    return result
+
+def delete_task(task_id: int) -> bool:
+    conn = get_conn()
+    n = conn.execute(
+        "DELETE FROM tasks WHERE id=?", (task_id,)
+    ).rowcount
+    conn.execute(
+        "DELETE FROM dependencies WHERE task_id=? OR depends_on=?",
+        (task_id, task_id)
+    )
+    conn.commit()
+    conn.close()
+    return n > 0
