@@ -13,7 +13,7 @@ Built for the **Vibe2Ship Hackathon** (Coding Ninjas × Google for Developers) �
 
 ## 🚀 Live Demo
 
-🔗 **[Try it here](https://your-app-url.run.app)** — *(deployed on Google Cloud Run — replace with your actual link once deployed)*
+🔗 **[Try it here](https://last-minute-lifesaver-664120010821.asia-south1.run.app)** — *(deployed on Google Cloud Run — replace with your actual link once deployed)*
 
 ---
 
