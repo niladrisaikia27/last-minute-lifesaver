@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import datetime, date
-
-DB_FILE = "tasks.db"
+import os
+DB_FILE = os.environ.get("LASTMINUTE_DB", "tasks.db")
 
 def get_conn():
     conn = sqlite3.connect(DB_FILE)

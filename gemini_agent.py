@@ -4,6 +4,7 @@ import os, json
 from dotenv import load_dotenv
 from datetime import date, datetime
 import task_manager
+import streamlit as st  
 
 # Try Streamlit secrets first (production), fall back to .env (local)
 try:
@@ -19,6 +20,29 @@ except Exception:
 client = genai.Client(api_key=API_KEY)
 
 # --- Tool functions Gemini can call ---
+
+import time, random
+
+def _call_with_retry(fn, max_retries: int = 3, base_delay: float = 3.0):
+    """Call fn() and retry on a 429 with exponential backoff + jitter.
+    Converts a visible rate-limit wall into an invisible pause for most
+    transient hits. Re-raises if retries run out, so the existing
+    friendly error message still acts as a last-resort fallback."""
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except Exception as e:
+            err = str(e)
+            is_rate_limit = "429" in err or "RESOURCE_EXHAUSTED" in err
+            if not is_rate_limit or attempt == max_retries - 1:
+                raise
+            time.sleep(base_delay * (2 ** attempt) + random.uniform(0, 1))
+
+def _db_path() -> str:
+    """The current session's SQLite path, set by app.py's bootstrap
+    block. Falls back to the shared default only if a tool is somehow
+    called outside a normal Streamlit session."""
+    return st.session_state.get("db_path", task_manager.DB_FILE)
 
 def add_task(title: str, deadline: str,
              priority: str = "medium",
@@ -140,57 +164,62 @@ def search_web_for_context(query: str) -> str:
     """
     # Separate call with Google Search enabled — clean agentic delegation
     try:
-        search_response = client.models.generate_content(
+        search_response = _call_with_retry(lambda: client.models.generate_content(
             model=MODEL,
             contents=f"Search and summarize: {query}. Be concise and factual.",
             config=types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())]
             )
-        )
+        ))
         return search_response.text
     except Exception as e:
         return f"Search unavailable: {str(e)}"
     
 def decompose_goal(goal: str) -> str:
     """Break a big, vague goal into concrete subtasks with realistic,
-    spaced-out deadlines. Researches the real deadline if the goal
-    references a known exam/competition, then adds 3-7 subtasks and
-    chains genuine dependencies — all within this one tool call.
-
-    Args:
-        goal: The big goal as the user stated it, e.g.
-              'Crack Amazon ML Summer School'
-    """
+    spaced-out deadlines — in 1-2 Gemini calls total, not N."""
+    today_str = date.today().isoformat()
     try:
-        sub_response = client.models.generate_content(
-            model=MODEL,
-            contents=(
-                f"Today is {date.today().isoformat()}. The user's goal is: "
-                f"\"{goal}\"\n\n"
-                "Break this into 3-7 concrete, specific subtasks that "
-                "actually move the user toward this goal — not vague "
-                "restatements of the goal itself.\n\n"
-                "1. If the goal references a real exam, competition, or "
-                "program with a known selection date, call "
-                "search_web_for_context FIRST to find that date. If you "
-                "can't find one, pick a sensible date 2-4 weeks out and "
-                "say so in your summary.\n"
-                "2. Space subtask deadlines across the time remaining — "
-                "don't dump them all on the same day, and leave at least "
-                "1 day of buffer before the final goal date.\n"
-                "3. Call add_task for EVERY subtask — title, deadline "
-                "(YYYY-MM-DD), priority, category.\n"
-                "4. If one subtask genuinely can't start before another "
-                "finishes, call link_task_dependency to chain them.\n"
-                "5. After all tool calls, write a short summary: how many "
-                "subtasks added, the final deadline you're working "
-                "toward, and one piece of encouragement."
-            ),
-            config=types.GenerateContentConfig(
-                tools=[add_task, link_task_dependency, search_web_for_context],
-            )
+        context = ""
+        needs_research = any(kw in goal.lower() for kw in
+            ["exam", "test", "competition", "hackathon", "summer school", "interview", "deadline"])
+        if needs_research:
+            search_resp = _call_with_retry(lambda: client.models.generate_content(
+                model=MODEL,
+                contents=f"Find the real, specific deadline for: {goal}. One or two sentences, concise.",
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())]
+                )
+            ))
+            context = search_resp.text
+
+        prompt = (
+            f"Today is {today_str}. Goal: \"{goal}\"\n"
+            + (f"Research context: {context}\n" if context else "")
+            + "Break this into 3-7 concrete subtasks with realistic, spaced-out "
+              "deadlines, each at least 1 day apart, with buffer before any final "
+              "deadline. Return ONLY valid JSON, no markdown fences:\n"
+              '{"subtasks": [{"title": "...", "deadline": "YYYY-MM-DD", '
+              '"priority": "high|medium|low", "category": "..."}], '
+              '"summary": "2-3 sentences: count added, final deadline, encouragement"}'
         )
-        return sub_response.text
+        result = _call_with_retry(lambda: client.models.generate_content(
+            model=MODEL, contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json")
+        ))
+        data = json.loads(result.text)
+
+        added = []
+        for sub in data.get("subtasks", []):
+            t = task_manager.add_task(
+                sub["title"], sub["deadline"], sub.get("priority", "medium"),
+                sub.get("category", "general")
+            )
+            added.append(t)
+        for i in range(1, len(added)):
+            task_manager.add_dependency(added[i]["id"], added[i-1]["id"])
+
+        return data.get("summary", f"Added {len(added)} subtasks toward: {goal}")
     except Exception as e:
         err = str(e)
         if "429" in err or "RESOURCE_EXHAUSTED" in err:
@@ -226,7 +255,7 @@ def delete_task(task_id: int) -> str:
 def extract_tasks_from_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
     """Send an image to Gemini and extract all tasks from it using multimodal AI."""
     try:
-        response = client.models.generate_content(
+        response = _call_with_retry(lambda: client.models.generate_content(
             model=MODEL,
             contents=[
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
@@ -246,7 +275,7 @@ After adding all tasks, write a 2-line summary of what you extracted.""")
             config=types.GenerateContentConfig(
                 tools=[add_task],
             )
-        )
+        ))
         return response.text
     except Exception as e:
         err = str(e)
@@ -263,7 +292,7 @@ def transcribe_audio(audio_bytes: bytes) -> tuple[str, str]:
     checks, triage, search, etc.) instead of a separate restricted path.
     """
     try:
-        response = client.models.generate_content(
+        response = _call_with_retry(lambda: client.models.generate_content(
             model=MODEL,
             contents=[
                 types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav"),
@@ -274,7 +303,7 @@ def transcribe_audio(audio_bytes: bytes) -> tuple[str, str]:
                     "speech, return exactly: NO_SPEECH_DETECTED"
                 ))
             ]
-        )
+        ))
         text = (response.text or "").strip()
         if not text or text == "NO_SPEECH_DETECTED":
             return "", "Couldn't make out any speech in that recording — try again, speaking clearly in English."
@@ -334,7 +363,7 @@ def run_agent(user_message: str, history: list = None) -> str:
     )
 
     try:
-        response = client.models.generate_content(
+        response = _call_with_retry(lambda: client.models.generate_content(
             model=MODEL,
             contents=contents,
             config=types.GenerateContentConfig(
@@ -348,7 +377,7 @@ def run_agent(user_message: str, history: list = None) -> str:
                     build_daily_schedule, decompose_goal
                 ],
             )
-        )
+        ))
         return response.text
 
     except Exception as e:

@@ -22,6 +22,20 @@ button[kind="header"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# ── Per-session, isolated database ───────────────────────────
+# Each browser session gets its own SQLite file in the system temp
+# directory, so concurrent users (e.g. multiple judges) never see or
+# overwrite each other's tasks. Generated once per session, reused on
+# every rerun.
+import uuid, os, tempfile
+
+if "db_path" not in st.session_state:
+    st.session_state.db_path = os.path.join(
+        tempfile.gettempdir(), f"lastminute_{uuid.uuid4().hex}.db"
+    )
+DB = st.session_state.db_path
+task_manager.DB_FILE = DB  
+
 # ── Demo seed ─────────────────────────────────────────────────
 def seed_demo_tasks():
     if not task_manager.get_all_tasks():
@@ -34,7 +48,10 @@ def seed_demo_tasks():
         task_manager.add_dependency(1, 2)   
         task_manager.add_dependency(1, 3)   
 
-seed_demo_tasks()
+DB = st.session_state.db_path
+task_manager.DB_FILE = DB
+task_manager.init_db() 
+seed_demo_tasks()           
 
 # ── Helpers ───────────────────────────────────────────────────
 def priority_color(p):
@@ -236,14 +253,12 @@ with st.sidebar:
 
 st.divider()
 
-st.divider()
-
 # ── AI Actions — 2x2 grid ────────────────────────────────
 st.markdown(
     '<p style="font-size:11px;font-weight:700;color:#555;'
     'text-transform:uppercase;letter-spacing:.08em;margin:0 0 8px;">AI Actions</p>',
     unsafe_allow_html=True
-)
+    )
 a1, a2 = st.columns(2)
 with a1:
     if st.button("Pre-mortem", use_container_width=True, key="btn_premortem"):
@@ -277,11 +292,11 @@ st.markdown(
     '<p style="font-size:11px;font-weight:700;color:#555;'
     'text-transform:uppercase;letter-spacing:.08em;margin:0 0 6px;">Decompose a Goal</p>',
     unsafe_allow_html=True
-)
+    )
 goal_text_input = st.text_input(
     "Goal", placeholder="e.g. Crack Amazon ML Summer School",
     key="goal_text_input", label_visibility="collapsed"
-)
+    )
 if st.button("Break it down", use_container_width=True, key="btn_goal"):
     if goal_text_input.strip():
         st.session_state.goal_text = goal_text_input.strip()
@@ -297,7 +312,7 @@ st.markdown(
     '<p style="font-size:11px;font-weight:700;color:#555;'
     'text-transform:uppercase;letter-spacing:.08em;margin:0 0 6px;">Manage</p>',
     unsafe_allow_html=True
-)
+    )
 
 if "show_edit" not in st.session_state:
     st.session_state.show_edit = False
