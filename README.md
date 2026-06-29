@@ -71,6 +71,9 @@ last-minute-lifesaver/
 ├── task_manager.py      # Data layer — SQLite, pure functions, no Streamlit/Gemini dependencies
 ├── requirements.txt
 ├── Dockerfile
+├── .dockerignore
+├── README.md
+├── .gitignore
 └── .env                 # GEMINI_API_KEY (local only — gitignored)
 ```
 
