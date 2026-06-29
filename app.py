@@ -1,7 +1,10 @@
 import streamlit as st
 import gemini_agent
 import task_manager
+import hashlib
 from datetime import date
+import pandas as pd
+import plotly.express as px
 
 # ── MUST be first Streamlit call ─────────────────────────────
 st.set_page_config(
@@ -15,7 +18,6 @@ st.markdown("""
 section[data-testid="stSidebar"] { background: #0E0E10 !important; }
 .main { background: #111114; }
 div[data-testid="stChatMessage"] { background: transparent !important; }
-[data-testid="collapsedControl"] { display: none !important; }
 button[kind="header"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -28,8 +30,9 @@ def seed_demo_tasks():
         task_manager.add_task("Write Google Doc description", "2026-06-28", "medium", "project")
         task_manager.add_task("Amazon ML Summer School prep", "2026-06-30", "high",   "academic")
         task_manager.add_task("Fill a form", "2026-06-30", "low",   "academic")
-        task_manager.add_dependency(2, 1)
-        task_manager.add_dependency(3, 2)
+        task_manager.add_dependency(3, 2)   
+        task_manager.add_dependency(1, 2)   
+        task_manager.add_dependency(1, 3)   
 
 seed_demo_tasks()
 
@@ -121,74 +124,139 @@ with st.sidebar:
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    if analysis["overdue"]:
-        st.markdown(
-            '<div style="font-size:10px;font-weight:700;letter-spacing:.08em;'
-            'text-transform:uppercase;color:#FF4B4B;border-bottom:0.5px solid #2A0A0A;'
-            'padding-bottom:5px;margin:12px 0 6px;">🚨 Overdue</div>',
-            unsafe_allow_html=True)
-        for t in analysis["overdue"]:
-            st.markdown(task_card(t), unsafe_allow_html=True)
+    # ── Search & Filter ───────────────────────────────────────
+    search_term = st.text_input(
+        "Search tasks", placeholder="🔍 Search by title...",
+        key="task_search", label_visibility="collapsed"
+    )
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        filter_priority = st.selectbox(
+            "Priority", ["All", "high", "medium", "low"],
+            key="filter_priority", label_visibility="collapsed"
+        )
+    with f2:
+        filter_category = st.selectbox(
+            "Category", ["All"] + task_manager.get_all_categories(),
+            key="filter_category", label_visibility="collapsed"
+        )
+    with f3:
+        filter_status = st.selectbox(
+            "Status", ["All", "Pending", "Done"],
+            key="filter_status", label_visibility="collapsed"
+        )
 
-    if analysis["due_today"]:
-        st.markdown(
-            '<div style="font-size:10px;font-weight:700;letter-spacing:.08em;'
-            'text-transform:uppercase;color:#FFAA00;border-bottom:0.5px solid #2D2000;'
-            'padding-bottom:5px;margin:12px 0 6px;">⏰ Due Today</div>',
-            unsafe_allow_html=True)
-        for t in analysis["due_today"]:
-            st.markdown(task_card(t), unsafe_allow_html=True)
+    is_filtering = bool(
+        search_term.strip() or filter_priority != "All"
+        or filter_category != "All" or filter_status != "All"
+    )
 
-    if analysis["due_this_week"]:
+    if is_filtering:
+        filtered = task_manager.filter_tasks(
+            all_tasks, search_term, filter_priority, filter_category, filter_status
+        )
         st.markdown(
-            '<div style="font-size:10px;font-weight:700;letter-spacing:.08em;'
-            'text-transform:uppercase;color:#4B9EFF;border-bottom:0.5px solid #0A1A2D;'
-            'padding-bottom:5px;margin:12px 0 6px;">📅 This Week</div>',
+            f'<div style="font-size:10px;font-weight:700;letter-spacing:.08em;'
+            f'text-transform:uppercase;color:#888;border-bottom:0.5px solid #222;'
+            f'padding-bottom:5px;margin:12px 0 6px;">'
+            f'🔍 {len(filtered)} Result{"s" if len(filtered) != 1 else ""}</div>',
             unsafe_allow_html=True)
-        for t in analysis["due_this_week"]:
-            st.markdown(task_card(t), unsafe_allow_html=True)
-
-    # ── Upcoming toggle ───────────────────────────────────────
-    if analysis["upcoming"]:
-        if "show_upcoming" not in st.session_state:
-            st.session_state.show_upcoming = False
-        if st.button(
-            f"Upcoming ({len(analysis['upcoming'])})",
-            use_container_width=True, key="btn_upcoming"
-        ):
-            st.session_state.show_upcoming = not st.session_state.show_upcoming
-        if st.session_state.show_upcoming:
-            for t in analysis["upcoming"]:
+        if not filtered:
+            st.caption("No tasks match those filters.")
+        else:
+            for t in filtered:
                 st.markdown(task_card(t), unsafe_allow_html=True)
 
-    # ── Completed toggle ──────────────────────────────────────
-    if analysis["completed"]:
-        if "show_completed" not in st.session_state:
-            st.session_state.show_completed = False
-        if st.button(
-            f"Completed — {done_n} done",
-            use_container_width=True, key="btn_completed"
-        ):
-            st.session_state.show_completed = not st.session_state.show_completed
-        if st.session_state.show_completed:
-            for t in analysis["completed"]:
-                st.markdown(
-                    f'<div style="display:flex;align-items:center;gap:10px;'
-                    f'padding:7px 10px;margin:3px 0;border-radius:5px;'
-                    f'background:rgba(255,255,255,0.02);">'
-                    f'<span style="font-size:13px;color:#21C55D;">✓</span>'
-                    f'<span style="font-size:13px;color:#444;'
-                    f'text-decoration:line-through;">{t["title"]}</span>'
-                    f'<span style="font-size:11px;color:#333;margin-left:auto;">'
-                    f'#{t["id"]} · {t.get("deadline","")}</span>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    st.divider()
+    if not is_filtering:
+        if analysis["overdue"]:
+            st.markdown(
+                '<div style="font-size:10px;font-weight:700;letter-spacing:.08em;'
+                'text-transform:uppercase;color:#FF4B4B;border-bottom:0.5px solid #2A0A0A;'
+                'padding-bottom:5px;margin:12px 0 6px;">🚨 Overdue</div>',
+                unsafe_allow_html=True)
+            for t in analysis["overdue"]:
+                st.markdown(task_card(t), unsafe_allow_html=True)
 
-    if st.button("Procrastination Profile",
-                 use_container_width=True, key="btn_profile"):
+        if analysis["due_today"]:
+            st.markdown(
+                '<div style="font-size:10px;font-weight:700;letter-spacing:.08em;'
+                'text-transform:uppercase;color:#FFAA00;border-bottom:0.5px solid #2D2000;'
+                'padding-bottom:5px;margin:12px 0 6px;">⏰ Due Today</div>',
+                unsafe_allow_html=True)
+            for t in analysis["due_today"]:
+                st.markdown(task_card(t), unsafe_allow_html=True)
+
+        if analysis["due_this_week"]:
+            st.markdown(
+                '<div style="font-size:10px;font-weight:700;letter-spacing:.08em;'
+                'text-transform:uppercase;color:#4B9EFF;border-bottom:0.5px solid #0A1A2D;'
+                'padding-bottom:5px;margin:12px 0 6px;">📅 This Week</div>',
+                unsafe_allow_html=True)
+            for t in analysis["due_this_week"]:
+                st.markdown(task_card(t), unsafe_allow_html=True)
+
+        # ── Upcoming toggle ───────────────────────────────────────
+        if analysis["upcoming"]:
+            if "show_upcoming" not in st.session_state:
+                st.session_state.show_upcoming = False
+            if st.button(
+                f"Upcoming ({len(analysis['upcoming'])})",
+                use_container_width=True, key="btn_upcoming"
+            ):
+                st.session_state.show_upcoming = not st.session_state.show_upcoming
+            if st.session_state.show_upcoming:
+                for t in analysis["upcoming"]:
+                    st.markdown(task_card(t), unsafe_allow_html=True)
+
+        # ── Completed toggle ──────────────────────────────────────
+        if analysis["completed"]:
+            if "show_completed" not in st.session_state:
+                st.session_state.show_completed = False
+            if st.button(
+                f"Completed — {done_n} done",
+                use_container_width=True, key="btn_completed"
+            ):
+                st.session_state.show_completed = not st.session_state.show_completed
+            if st.session_state.show_completed:
+                for t in analysis["completed"]:
+                    st.markdown(
+                        f'<div style="display:flex;align-items:center;gap:10px;'
+                        f'padding:7px 10px;margin:3px 0;border-radius:5px;'
+                        f'background:rgba(255,255,255,0.02);">'
+                        f'<span style="font-size:13px;color:#21C55D;">✓</span>'
+                        f'<span style="font-size:13px;color:#444;'
+                        f'text-decoration:line-through;">{t["title"]}</span>'
+                        f'<span style="font-size:11px;color:#333;margin-left:auto;">'
+                        f'#{t["id"]} · {t.get("deadline","")}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+
+st.divider()
+
+st.divider()
+
+# ── AI Actions — 2x2 grid ────────────────────────────────
+st.markdown(
+    '<p style="font-size:11px;font-weight:700;color:#555;'
+    'text-transform:uppercase;letter-spacing:.08em;margin:0 0 8px;">AI Actions</p>',
+    unsafe_allow_html=True
+)
+a1, a2 = st.columns(2)
+with a1:
+    if st.button("Pre-mortem", use_container_width=True, key="btn_premortem"):
+        st.session_state.trigger = "premortem"
+        st.rerun()
+    if st.button("Triage Me", use_container_width=True, key="btn_triage"):
+        st.session_state.trigger = "triage"
+        st.rerun()
+with a2:
+    if st.button("My Schedule", use_container_width=True, key="btn_schedule"):
+        st.session_state.trigger = "schedule"
+        st.rerun()
+    if st.button("My Pattern", use_container_width=True, key="btn_profile"):
         profile = task_manager.get_procrastination_profile()
         if "message" in profile:
             st.info(profile["message"])
@@ -196,97 +264,96 @@ with st.sidebar:
             avg     = profile.get("average_delay_days", 0)
             pattern = profile.get("pattern", "unknown")
             if pattern == "early":
-                st.success(f"You finish {abs(avg)} days early on average!")
+                st.success(f"You finish {abs(avg)}d early on average!")
             elif pattern == "late":
-                st.warning(f"You submit {avg} days late on average.")
+                st.warning(f"You submit {avg}d late on average.")
             else:
                 st.success("Right on time on average!")
 
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    # ── Edit/Delete toggle ────────────────────────────────────
-    if "show_edit" not in st.session_state:
-        st.session_state.show_edit = False
-    if st.button(
-        "Edit or Delete a Task",
-        use_container_width=True, key="btn_edit_toggle"
-    ):
-        st.session_state.show_edit = not st.session_state.show_edit
-
-    if st.session_state.show_edit:
-        all_t = task_manager.get_all_tasks()
-        if not all_t:
-            st.caption("No tasks yet.")
-        else:
-            task_options = {
-                f"#{t['id']} — {t['title'][:28]}": t for t in all_t
-            }
-            selected_label = st.selectbox(
-                "Select task", list(task_options.keys()),
-                key="edit_select", label_visibility="collapsed"
-            )
-            selected = task_options[selected_label]
-            new_title = st.text_input(
-                "Title", value=selected["title"], key="edit_title"
-            )
-            col_dl, col_pri = st.columns(2)
-            with col_dl:
-                new_deadline = st.text_input(
-                    "Deadline", value=selected["deadline"], key="edit_deadline"
-                )
-            with col_pri:
-                pri_opts = ["high", "medium", "low"]
-                new_priority = st.selectbox(
-                    "Priority", pri_opts,
-                    index=pri_opts.index(selected.get("priority", "medium")),
-                    key="edit_priority"
-                )
-            new_category = st.text_input(
-                "Category", value=selected.get("category", "general"),
-                key="edit_category"
-            )
-            c_save, c_del = st.columns(2)
-            with c_save:
-                if st.button("Save", use_container_width=True, key="btn_save"):
-                    task_manager.update_task(
-                        selected["id"],
-                        title=new_title,
-                        deadline=new_deadline,
-                        priority=new_priority,
-                        category=new_category
-                    )
-                    st.success("Saved!")
-                    st.rerun()
-            with c_del:
-                if st.button("Delete", use_container_width=True, key="btn_del"):
-                    task_manager.delete_task(selected["id"])
-                    st.warning("Deleted.")
-                    st.rerun()
-    # ── End Manage Tasks ─────────────────────────────────────
-
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-
-    if st.button("🔮 Pre-mortem Analysis", use_container_width=True):
-        st.session_state.trigger = "premortem"
+# ── Goal decompose ────────────────────────────────────────
+st.markdown(
+    '<p style="font-size:11px;font-weight:700;color:#555;'
+    'text-transform:uppercase;letter-spacing:.08em;margin:0 0 6px;">Decompose a Goal</p>',
+    unsafe_allow_html=True
+)
+goal_text_input = st.text_input(
+    "Goal", placeholder="e.g. Crack Amazon ML Summer School",
+    key="goal_text_input", label_visibility="collapsed"
+)
+if st.button("Break it down", use_container_width=True, key="btn_goal"):
+    if goal_text_input.strip():
+        st.session_state.goal_text = goal_text_input.strip()
+        st.session_state.trigger   = "goal"
         st.rerun()
+    else:
+        st.warning("Type a goal first.")
 
-    if st.button("🚨 I'm Overwhelmed — Triage Me", use_container_width=True):
-        st.session_state.trigger = "triage"
-        st.rerun()
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+# ── Manage + Export ───────────────────────────────────────
+st.markdown(
+    '<p style="font-size:11px;font-weight:700;color:#555;'
+    'text-transform:uppercase;letter-spacing:.08em;margin:0 0 6px;">Manage</p>',
+    unsafe_allow_html=True
+)
 
-    pending_tasks = [t for t in task_manager.get_all_tasks() if not t["done"]]
-    if pending_tasks:
-        ics = task_manager.generate_ics()
-        st.download_button(
-            label="📅 Export to Google Calendar",
-            data=ics,
-            file_name="my_tasks.ics",
-            mime="text/calendar",
-            use_container_width=True,
-            help="Downloads .ics — import into Google Calendar, Apple Calendar, or Outlook"
+if "show_edit" not in st.session_state:
+    st.session_state.show_edit = False
+edit_lbl = "Close Editor" if st.session_state.show_edit else "Edit or Delete a Task"
+if st.button(edit_lbl, use_container_width=True, key="btn_edit_toggle"):
+    st.session_state.show_edit = not st.session_state.show_edit
+    st.rerun()
+
+if st.session_state.show_edit:
+    all_t = task_manager.get_all_tasks()
+    if not all_t:
+        st.caption("No tasks yet.")
+    else:
+        task_options = {f"#{t['id']} — {t['title'][:26]}": t for t in all_t}
+        selected_label = st.selectbox(
+            "Task", list(task_options.keys()),
+            key="edit_select", label_visibility="collapsed"
         )
+        selected     = task_options[selected_label]
+        new_title    = st.text_input("Title",    value=selected["title"],    key="edit_title")
+        cd, cp       = st.columns(2)
+        with cd:
+            new_deadline = st.text_input("Deadline", value=selected["deadline"], key="edit_deadline")
+        with cp:
+            pri_opts     = ["high", "medium", "low"]
+            new_priority = st.selectbox(
+                "Priority", pri_opts,
+                index=pri_opts.index(selected.get("priority", "medium")),
+                key="edit_priority"
+            )
+        new_category = st.text_input("Category", value=selected.get("category","general"), key="edit_category")
+        cs, cd2 = st.columns(2)
+        with cs:
+            if st.button("Save", use_container_width=True, key="btn_save"):
+                task_manager.update_task(
+                    selected["id"], title=new_title,
+                    deadline=new_deadline, priority=new_priority,
+                    category=new_category
+                )
+                st.success("Saved!")
+                st.rerun()
+        with cd2:
+            if st.button("Delete", use_container_width=True, key="btn_del"):
+                task_manager.delete_task(selected["id"])
+                st.warning("Deleted.")
+                st.rerun()
+
+pending_tasks = [t for t in task_manager.get_all_tasks() if not t["done"]]
+if pending_tasks:
+    ics = task_manager.generate_ics()
+    st.download_button(
+        label="Export to Google Calendar",
+        data=ics, file_name="my_tasks.ics", mime="text/calendar",
+        use_container_width=True,
+        help="Downloads .ics — import into Google Calendar, Apple Calendar, or Outlook"    
+    )
 # ── Sidebar ends here ─────────────────────────────────────────
 
 
@@ -309,8 +376,6 @@ def get_morning_briefing():
         return
     analysis     = task_manager.get_urgency_analysis()
     urgent_count = len(analysis["overdue"]) + len(analysis["due_today"])
-    if urgent_count == 0:      
-        return
     if urgent_count == 0 and not analysis["due_this_week"]:
         return
     briefing_prompt = (
@@ -339,7 +404,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Tabs ──────────────────────────────────────────────────────
-tab_chat, tab_image = st.tabs(["Chat", "Image to Tasks"])
+tab_chat, tab_image, tab_analytics = st.tabs([
+    "Chat  —  add & manage tasks",
+    "Image to Tasks  —  scan a photo",
+    "Analytics  —  your patterns"
+])
 
 
 # ════════════════════════════════════════════════════════════
@@ -360,6 +429,20 @@ with tab_chat:
             "I'm completely overwhelmed. Use suggest_triage to analyse everything "
             "and give me a ruthless plan: exactly what to DO NOW, what to DEFER, "
             "and what to DROP entirely. Be specific — name the tasks."
+        )
+    elif trigger == "goal":
+        goal_text = st.session_state.pop("goal_text", "")
+        auto_prompt = (
+            f'My big goal is: "{goal_text}". Break this down into concrete, '
+            f"realistic subtasks with spaced-out deadlines using decompose_goal."
+        )
+    elif trigger == "schedule":
+        auto_prompt = (
+            "Build me an hour-by-hour execution plan for the rest of today. "
+            "Call build_daily_schedule first to see my pending tasks, current "
+            "time, and urgency breakdown. Block time by priority and deadline "
+            "proximity, leave short buffers between blocks, and flag anything "
+            "that's at risk of being missed."
         )
     else:
         auto_prompt = None
@@ -384,6 +467,42 @@ with tab_chat:
 
     # Morning briefing
     get_morning_briefing()
+
+    # ── Voice input ───────────────────────────────────────────
+    st.markdown(
+    '<p style="font-size:12px;color:#555;margin:16px 0 4px;">'
+    'Or speak a task — Gemini will transcribe and add it automatically</p>',
+    unsafe_allow_html=True
+    )
+
+    audio_value = st.audio_input("Record a task", label_visibility="collapsed")
+
+    if audio_value is not None:
+        audio_bytes = audio_value.getvalue()
+        audio_hash  = hashlib.md5(audio_bytes).hexdigest()
+
+        if st.session_state.get("last_audio_hash") != audio_hash:
+            st.session_state.last_audio_hash = audio_hash
+
+            with st.spinner("Listening..."):
+                transcript, error = gemini_agent.transcribe_audio(audio_bytes)
+
+            if error:
+                st.warning(error)
+            else:
+                with st.chat_message("user"):
+                    st.write(f"🎤 {transcript}")
+                st.session_state.messages.append({"role": "user", "content": transcript})
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        reply = gemini_agent.run_agent(transcript, st.session_state.history)
+                    st.write(reply)
+
+                st.session_state.messages.append({"role": "assistant", "content": reply})
+                st.session_state.history.append({"role": "user",      "content": transcript})
+                st.session_state.history.append({"role": "assistant", "content": reply})
+                st.rerun()
 
     # Chat input
     prompt = st.chat_input(
@@ -460,8 +579,7 @@ with tab_image:
             )
 
             if st.button("View tasks in dashboard", use_container_width=True):
-                st.session_state.last_img_key = None
-                st.rerun()
+                st.toast("Tasks added — check the Urgency Dashboard in the sidebar ←", icon="✅")
     else:
         # Empty state
         st.markdown("""
@@ -474,3 +592,115 @@ with tab_image:
   </p>
 </div>
 """, unsafe_allow_html=True)
+        
+# ════════════════════════════════════════════════════════════
+# TAB 3 — Analytics
+# ════════════════════════════════════════════════════════════
+with tab_analytics:
+    st.markdown("""
+<div style="margin-bottom:16px;">
+  <p style="font-size:16px;font-weight:600;color:#F0F0F0;margin:0 0 6px;">
+    Your productivity, visualized
+  </p>
+  <p style="font-size:13px;color:#666;margin:0;">
+    Completion trends, procrastination patterns, and urgency breakdown —
+    updated live from your task data.
+  </p>
+</div>
+""", unsafe_allow_html=True)
+
+    all_tasks = task_manager.get_all_tasks()
+
+    if not all_tasks:
+        st.info("Add a few tasks first — charts will appear here once there's data to show.")
+    else:
+        analysis = task_manager.get_urgency_analysis()
+        total    = len(all_tasks)
+        done_n   = len(analysis["completed"])
+        pct      = round(done_n / total * 100, 1) if total else 0
+        profile  = task_manager.get_procrastination_profile()
+        avg_delay = profile.get("average_delay_days")
+
+        # ── Hero metrics ─────────────────────────────────────
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Completion Rate", f"{pct}%")
+        m2.metric("Total Tasks", total)
+        if avg_delay is not None:
+            label = "early" if avg_delay < 0 else "late" if avg_delay > 0 else "on time"
+            m3.metric("Avg. Finish Time", f"{abs(avg_delay)}d {label}")
+        else:
+            m3.metric("Avg. Finish Time", "—", help="Complete a task to start tracking this")
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+
+        # ── Completion by category ──────────────────────────
+        with c1:
+            st.markdown("**Completion by Category**")
+            cat_df = pd.DataFrame(task_manager.get_category_completion_stats())
+            fig1 = px.bar(
+                cat_df, x="category", y=["done", "pending"],
+                color_discrete_map={"done": "#21C55D", "pending": "#333333"},
+                labels={"value": "Tasks", "category": "", "variable": ""},
+                barmode="stack"
+            )
+            fig1.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font_color="#CCCCCC", legend_title_text="",
+                margin=dict(l=10, r=10, t=10, b=10), height=300
+            )
+            st.plotly_chart(fig1, use_container_width=True)
+
+        # ── Urgency distribution ─────────────────────────────
+        with c2:
+            st.markdown("**Urgency Distribution (Pending)**")
+            urgency_counts = {
+                "Overdue":   len(analysis["overdue"]),
+                "Due Today": len(analysis["due_today"]),
+                "This Week": len(analysis["due_this_week"]),
+                "Upcoming":  len(analysis["upcoming"]),
+            }
+            pending_total = sum(urgency_counts.values())
+            if pending_total == 0:
+                st.success("Nothing pending — you're fully caught up! 🎉")
+            else:
+                fig2 = px.pie(
+                    names=list(urgency_counts.keys()),
+                    values=list(urgency_counts.values()),
+                    color=list(urgency_counts.keys()),
+                    color_discrete_map={
+                        "Overdue": "#FF4B4B", "Due Today": "#FFAA00",
+                        "This Week": "#4B9EFF", "Upcoming": "#555555"
+                    },
+                    hole=0.55
+                )
+                fig2.update_traces(textinfo="value+label", textfont_color="#F0F0F0")
+                fig2.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    showlegend=False, margin=dict(l=10, r=10, t=10, b=10), height=300
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+
+        # ── Delay patterns by category ───────────────────────
+        st.markdown("**Delay Patterns by Category**")
+        delay_stats = task_manager.get_delay_by_category()
+        if not delay_stats:
+            st.caption("Complete a few tasks in different categories to unlock this chart.")
+        else:
+            delay_df = pd.DataFrame(delay_stats)
+            colors = ["#FF4B4B" if v > 0 else "#21C55D" for v in delay_df["avg_delay_days"]]
+            fig3 = px.bar(
+                delay_df, x="avg_delay_days", y="category", orientation="h",
+                text="avg_delay_days",
+                labels={"avg_delay_days": "Avg. days (− early / + late)", "category": ""}
+            )
+            fig3.update_traces(marker_color=colors, texttemplate="%{text}d", textposition="outside")
+            fig3.add_vline(x=0, line_color="#555555", line_dash="dash")
+            fig3.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font_color="#CCCCCC", margin=dict(l=10, r=10, t=10, b=10),
+                height=max(200, 60 * len(delay_stats))
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+            if len(delay_stats) < 2:
+                st.caption("Complete tasks in more categories for a fuller comparison.")

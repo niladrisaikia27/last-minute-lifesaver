@@ -2,7 +2,7 @@ from google import genai
 from google.genai import types
 import os, json
 from dotenv import load_dotenv
-from datetime import date
+from datetime import date, datetime
 import task_manager
 
 # Try Streamlit secrets first (production), fall back to .env (local)
@@ -32,7 +32,8 @@ def add_task(title: str, deadline: str,
         category: Type e.g. academic, personal, work, project
     """
     task = task_manager.add_task(title, deadline, priority, category)
-    return f"Saved: '{title}' due {deadline} [{priority}, {category}]"
+    return (f"Saved as Task #{task['id']}: '{task['title']}' "
+            f"due {task['deadline']} [{task['priority']}, {task['category']}]")
 
 def get_all_tasks() -> str:
     """Get all tasks the user has added so far."""
@@ -111,6 +112,25 @@ def suggest_triage() -> str:
         "urgency": urgency
     }, indent=2)
 
+def build_daily_schedule() -> str:
+    """Gather everything needed to build an hour-by-hour schedule for
+    the REST of today: pending tasks, urgency breakdown, current time,
+    and hours remaining until midnight — so the plan starts from now,
+    not from midnight."""
+    tasks = task_manager.get_all_tasks()
+    pending = [t for t in tasks if not t["done"]]
+    if not pending:
+        return "No pending tasks — nothing to schedule."
+    urgency = task_manager.get_urgency_analysis()
+    now = datetime.now()
+    hours_left = round((24 * 60 - (now.hour * 60 + now.minute)) / 60, 1)
+    return json.dumps({
+        "current_time": now.strftime("%H:%M"),
+        "hours_until_midnight": hours_left,
+        "pending_tasks": pending,
+        "urgency_breakdown": urgency
+    }, indent=2)
+
 def search_web_for_context(query: str) -> str:
     """Search the web for relevant information — exam dates, competition
     deadlines, official announcements, or study resources.
@@ -130,6 +150,52 @@ def search_web_for_context(query: str) -> str:
         return search_response.text
     except Exception as e:
         return f"Search unavailable: {str(e)}"
+    
+def decompose_goal(goal: str) -> str:
+    """Break a big, vague goal into concrete subtasks with realistic,
+    spaced-out deadlines. Researches the real deadline if the goal
+    references a known exam/competition, then adds 3-7 subtasks and
+    chains genuine dependencies — all within this one tool call.
+
+    Args:
+        goal: The big goal as the user stated it, e.g.
+              'Crack Amazon ML Summer School'
+    """
+    try:
+        sub_response = client.models.generate_content(
+            model=MODEL,
+            contents=(
+                f"Today is {date.today().isoformat()}. The user's goal is: "
+                f"\"{goal}\"\n\n"
+                "Break this into 3-7 concrete, specific subtasks that "
+                "actually move the user toward this goal — not vague "
+                "restatements of the goal itself.\n\n"
+                "1. If the goal references a real exam, competition, or "
+                "program with a known selection date, call "
+                "search_web_for_context FIRST to find that date. If you "
+                "can't find one, pick a sensible date 2-4 weeks out and "
+                "say so in your summary.\n"
+                "2. Space subtask deadlines across the time remaining — "
+                "don't dump them all on the same day, and leave at least "
+                "1 day of buffer before the final goal date.\n"
+                "3. Call add_task for EVERY subtask — title, deadline "
+                "(YYYY-MM-DD), priority, category.\n"
+                "4. If one subtask genuinely can't start before another "
+                "finishes, call link_task_dependency to chain them.\n"
+                "5. After all tool calls, write a short summary: how many "
+                "subtasks added, the final deadline you're working "
+                "toward, and one piece of encouragement."
+            ),
+            config=types.GenerateContentConfig(
+                tools=[add_task, link_task_dependency, search_web_for_context],
+            )
+        )
+        return sub_response.text
+    except Exception as e:
+        err = str(e)
+        if "429" in err or "RESOURCE_EXHAUSTED" in err:
+            return "Rate limit hit while decomposing the goal. Wait a moment and try again."
+        return f"Could not decompose goal: {err[:200]}"
 
 def edit_task(task_id: int, title: str = None, deadline: str = None,
               priority: str = None, category: str = None) -> str:
@@ -145,7 +211,8 @@ def edit_task(task_id: int, title: str = None, deadline: str = None,
     result = task_manager.update_task(task_id, title, deadline, priority, category)
     if not result:
         return f"Task {task_id} not found."
-    return f"Updated task #{task_id}: '{result['title']}' due {result['deadline']} [{result['priority']}]"
+    return (f"Updated Task #{task_id}: '{result['title']}' "
+            f"due {result['deadline']} [{result['priority']}]")
 
 def delete_task(task_id: int) -> str:
     """Permanently delete a task.
@@ -186,10 +253,42 @@ After adding all tasks, write a 2-line summary of what you extracted.""")
         if "429" in err or "RESOURCE_EXHAUSTED" in err:
             return "Rate limit hit. Wait 60 seconds and try again."
         return f"Could not process image: {err[:200]}"
+    
+def transcribe_audio(audio_bytes: bytes) -> tuple[str, str]:
+    """Transcribe a short voice recording into plain text.
+
+    Returns (transcript, error) — exactly one is non-empty. Deliberately
+    does NOT call any task tools here; the transcript gets routed through
+    run_agent afterwards so it benefits from the full Core Rules (cascade
+    checks, triage, search, etc.) instead of a separate restricted path.
+    """
+    try:
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=[
+                types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav"),
+                types.Part.from_text(text=(
+                    "Transcribe exactly what is said in this audio recording. "
+                    "Return ONLY the transcribed words — no preamble, no "
+                    "quotation marks, no commentary. If there is no audible "
+                    "speech, return exactly: NO_SPEECH_DETECTED"
+                ))
+            ]
+        )
+        text = (response.text or "").strip()
+        if not text or text == "NO_SPEECH_DETECTED":
+            return "", "Couldn't make out any speech in that recording — try again, speaking clearly in English."
+        return text, ""
+    except Exception as e:
+        err = str(e)
+        if "429" in err or "RESOURCE_EXHAUSTED" in err:
+            return "", "Rate limit hit while transcribing. Wait a moment and try again."
+        return "", f"Could not transcribe audio: {err[:200]}"
 
 # --- Agent runner ---
 
-SYSTEM_PROMPT = f"""You are Life Saver, an advanced AI productivity companion.
+def build_system_prompt() -> str:
+    return f"""You are Life Saver, an advanced AI productivity companion.
 Today is {date.today().isoformat()}.
 
 ## Core Rules — apply every single turn:
@@ -202,19 +301,22 @@ Today is {date.today().isoformat()}.
 7. User wants to change a task → call edit_task
 8. User wants to remove a task → call delete_task
 9. Asked about patterns → call get_procrastination_profile
-10. Asked to plan today → use analyze_urgency then build a schedule
+10. Asked to plan today or build a schedule → call build_daily_schedule (not analyze_urgency) and build an hour-by-hour timetable starting from the current time
+11. User states a big, vague, or long-term goal instead of one concrete task (e.g. "crack X exam", "win Y hackathon", "get into Z", "learn [skill] by [event]") → call decompose_goal with their exact words. Do NOT call add_task yourself for a vague goal — let decompose_goal handle the breakdown.
+12. Tool responses that include "Task #N" — reuse that exact ID for any later get_cascade_impact, link_task_dependency, edit_task, delete_task, or mark_task_done call in this same turn. Never guess an ID.
 
 ## What makes you different:
 You search the web when you need real information.
 You understand cascade effects — one delay breaks a chain.
 You profile procrastination patterns to give personalized advice.
 You help users decide what to drop, not just what to do.
+You break vague goals into a concrete plan instead of one giant task.
 
 ## Response style:
 - Lead with the action taken
 - One proactive insight per response
 - End with a specific next step
-- Max 80 words unless analysis is requested
+- Max 80 words unless analysis, a schedule, or a goal breakdown is requested
 - Never say you lack access — use your tools"""
 
 def run_agent(user_message: str, history: list = None) -> str:
@@ -236,13 +338,14 @@ def run_agent(user_message: str, history: list = None) -> str:
             model=MODEL,
             contents=contents,
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
+                system_instruction=build_system_prompt(),
                 tools=[
                     add_task, get_all_tasks, mark_task_done,
                     analyze_urgency, get_cascade_impact,
                     link_task_dependency, get_procrastination_profile,
                     run_premortem_analysis, suggest_triage,
                     search_web_for_context, edit_task, delete_task,
+                    build_daily_schedule, decompose_goal
                 ],
             )
         )
