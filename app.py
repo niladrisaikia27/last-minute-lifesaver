@@ -485,10 +485,14 @@ with tab_chat:
 
     # ── Voice input ───────────────────────────────────────────
     st.markdown(
-    '<p style="font-size:12px;color:#555;margin:16px 0 4px;">'
-    'Or speak a task — Gemini will transcribe and add it automatically</p>',
-    unsafe_allow_html=True
+        '<p style="font-size:12px;color:#555;margin:16px 0 4px;">'
+        'Or speak a task — Gemini will transcribe and add it automatically</p>',
+        unsafe_allow_html=True
     )
+
+    # Initialize a set to keep track of fully processed audio hashes
+    if "processed_hashes" not in st.session_state:
+        st.session_state.processed_hashes = set()
 
     audio_value = st.audio_input("Record a task", label_visibility="collapsed")
 
@@ -496,15 +500,20 @@ with tab_chat:
         audio_bytes = audio_value.getvalue()
         audio_hash  = hashlib.md5(audio_bytes).hexdigest()
 
-        if st.session_state.get("last_audio_hash") != audio_hash:
-            st.session_state.last_audio_hash = audio_hash
-
+        # ONLY run if this specific audio file hash has never been processed before
+        if audio_hash not in st.session_state.processed_hashes:
+            
             with st.spinner("Listening..."):
                 transcript, error = gemini_agent.transcribe_audio(audio_bytes)
 
             if error:
                 st.warning(error)
+                # If it failed due to a rate limit, don't block the hash permanently 
+                # so the user can click it again to retry.
             else:
+                # Successfully transcribed! Mark this hash as processed IMMEDIATELY
+                st.session_state.processed_hashes.add(audio_hash)
+
                 with st.chat_message("user"):
                     st.write(f"🎤 {transcript}")
                 st.session_state.messages.append({"role": "user", "content": transcript})
@@ -517,6 +526,8 @@ with tab_chat:
                 st.session_state.messages.append({"role": "assistant", "content": reply})
                 st.session_state.history.append({"role": "user",      "content": transcript})
                 st.session_state.history.append({"role": "assistant", "content": reply})
+                
+                # Force a rerun to update the chat UI layout cleanly
                 st.rerun()
 
     # Chat input
